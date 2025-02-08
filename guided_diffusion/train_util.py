@@ -4,6 +4,8 @@ import os
 
 import blobfile as bf
 import torch as th
+import torchvision as tv
+import torchvision.transforms.functional as F_vision
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
@@ -33,6 +35,7 @@ class TrainLoop:
         log_interval,
         save_interval,
         resume_checkpoint,
+        max_steps=10,
         use_fp16=False,
         fp16_scale_growth=1e-3,
         schedule_sampler=None,
@@ -53,6 +56,7 @@ class TrainLoop:
         self.log_interval = log_interval
         self.save_interval = save_interval
         self.resume_checkpoint = resume_checkpoint
+        self.max_steps = max_steps
         self.use_fp16 = use_fp16
         self.fp16_scale_growth = fp16_scale_growth
         self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
@@ -152,14 +156,14 @@ class TrainLoop:
 
     def run_loop(self):
         while (
-            not self.lr_anneal_steps
-            or self.step + self.resume_step < self.lr_anneal_steps
+            (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps) and self.step < self.max_steps
         ):
             batch, cond = next(self.data)
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
             if self.step % self.save_interval == 0:
+                self.samples()
                 self.save()
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
@@ -228,6 +232,25 @@ class TrainLoop:
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+
+    def samples(self):
+        batch_size = 20
+        if dist.get_rank() == 0:
+            classes = th.randint(
+                low=0, high=self.model.num_classes, size=(batch_size,), device=dist_util.dev()
+            )
+            model_kwargs = {"y": classes}
+            sample = self.diffusion.p_sample_loop(
+                self.model,
+                (batch_size, self.model.in_channels, self.model.image_size, self.model.image_size),
+                clip_denoised=True,
+                model_kwargs=model_kwargs,
+            )
+            grid = tv.utils.make_grid(sample, nrow=5, normalize=True, value_range=(-1, 1))
+            grid_img = F_vision.to_pil_image(grid)
+            figs_dir = os.path.join(get_blob_logdir(), "figs")
+            os.makedirs(figs_dir, exist_ok=True)
+            grid_img.save(os.path.join(figs_dir, f"{self.step}.png"))
 
     def save(self):
         def save_checkpoint(rate, params):

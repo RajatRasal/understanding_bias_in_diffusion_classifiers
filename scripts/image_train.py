@@ -4,8 +4,9 @@ Train a diffusion model on images.
 
 import argparse
 
+from datasets.mixer import load_data
 from guided_diffusion import dist_util, logger
-from guided_diffusion.image_datasets import load_data
+# from guided_diffusion.image_datasets import load_data
 from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
@@ -22,20 +23,22 @@ def main():
     dist_util.setup_dist()
     logger.configure()
 
-    logger.log("creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(
-        **args_to_dict(args, model_and_diffusion_defaults().keys())
-    )
-    model.to(dist_util.dev())
-    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
-
     logger.log("creating data loader...")
-    data = load_data(
-        data_dir=args.data_dir,
+    data, num_classes, in_channels = load_data(
+        dataset=args.dataset,
         batch_size=args.batch_size,
         image_size=args.image_size,
-        class_cond=args.class_cond,
+        train=True,
     )
+
+    args_dict = args_to_dict(args, model_and_diffusion_defaults().keys())
+    args_dict["in_channels"] = in_channels
+    args_dict["num_classes"] = num_classes
+
+    logger.log("creating model and diffusion...")
+    model, diffusion = create_model_and_diffusion(**args_dict)
+    model.to(dist_util.dev())
+    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("training...")
     TrainLoop(
@@ -49,6 +52,7 @@ def main():
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         resume_checkpoint=args.resume_checkpoint,
+        max_steps=args.max_steps,
         use_fp16=args.use_fp16,
         fp16_scale_growth=args.fp16_scale_growth,
         schedule_sampler=schedule_sampler,
@@ -59,8 +63,9 @@ def main():
 
 def create_argparser():
     defaults = dict(
-        data_dir="",
+        dataset="",
         schedule_sampler="uniform",
+        max_steps=10,
         lr=1e-4,
         weight_decay=0.0,
         lr_anneal_steps=0,

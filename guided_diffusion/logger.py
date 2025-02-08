@@ -2,7 +2,6 @@
 Logger copied from OpenAI baselines to avoid extra RL-based dependencies:
 https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/logger.py
 """
-
 import os
 import sys
 import shutil
@@ -14,6 +13,8 @@ import tempfile
 import warnings
 from collections import defaultdict
 from contextlib import contextmanager
+
+from torch.utils.tensorboard import SummaryWriter
 
 DEBUG = 10
 INFO = 20
@@ -158,28 +159,17 @@ class TensorBoardOutputFormat(KVWriter):
         self.step = 1
         prefix = "events"
         path = osp.join(osp.abspath(dir), prefix)
-        import tensorflow as tf
-        from tensorflow.python import pywrap_tensorflow
-        from tensorflow.core.util import event_pb2
-        from tensorflow.python.util import compat
-
-        self.tf = tf
-        self.event_pb2 = event_pb2
-        self.pywrap_tensorflow = pywrap_tensorflow
-        self.writer = pywrap_tensorflow.EventsWriter(compat.as_bytes(path))
+        self.writer = SummaryWriter(path)
 
     def writekvs(self, kvs):
-        def summary_val(k, v):
-            kwargs = {"tag": k, "simple_value": float(v)}
-            return self.tf.Summary.Value(**kwargs)
-
-        summary = self.tf.Summary(value=[summary_val(k, v) for k, v in kvs.items()])
-        event = self.event_pb2.Event(wall_time=time.time(), summary=summary)
-        event.step = (
-            self.step
-        )  # is there any reason why you'd want to specify the step?
-        self.writer.WriteEvent(event)
-        self.writer.Flush()
+        for k, v in kvs.items():
+            self.writer.add_scalar(
+                k,
+                float(v),
+                global_step=self.step,
+                walltime=time.time(),
+            )
+        self.writer.flush()
         self.step += 1
 
     def close(self):
